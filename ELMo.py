@@ -1,9 +1,10 @@
 import tensorflow as tf
 
-#tf.set_random_seed(777)
+tf.set_random_seed(777)
 
 class ELMo:
-	def __init__(self, sess, time_depth, cell_num, voca_size, embedding_size, stack, lr):
+	def __init__(self, sess, time_depth, cell_num, voca_size, embedding_size, stack, lr, word_embedding=None, 
+					embedding_mode='char', pad_idx=0, window_size=[2,3,4], filters=[3,4,5]):
 		self.sess = sess
 		self.time_depth = time_depth
 		self.cell_num = cell_num
@@ -11,15 +12,27 @@ class ELMo:
 		self.embedding_size = embedding_size
 		self.stack = stack
 		self.lr = lr
+		self.word_embedding = word_embedding
+		self.embedding_mode = embedding_mode
+		self.pad_idx = pad_idx
+		self.window_size = window_size
+		self.filters = filters
 
 		with tf.name_scope("placeholder"):
-			self.test = tf.placeholder(tf.float32, [None, self.time_depth, self.embedding_size], name="x") # [N, self.time_depth * self.feature_num]
+			if embedding_mode is 'char':
+				self.data = tf.placeholder(tf.int32, [None, None, None], name="x") # [N, word, char]
+			elif embedding_mode is 'word':
+				self.data = tf.placeholder(tf.int32, [None, None], name="x") # [N, word]
 			self.target = tf.placeholder(tf.float32, [None, None], name="target") 
 			self.keep_prob = tf.placeholder(tf.float32, name="keep_prob") # for dropout
-		
 
-			self.biLM_embedding = self.biLM(self.test, stack=self.stack) # [N, self.time_depth, self.embedding_size] * (self.stack+1)
-			self.elmo_embedding = self._ELMo(self.biLM_embedding) # [N, self.time_depth, self.embeding_size]
+		with tf.name_scope("embedding"):		
+			if self.word_embedding is None:
+				self.embedding_table = self.make_embadding_table(pad_idx=self.pad_idx)
+				self.word_embedding = self.embedding_func(mode=embedding_mode)
+
+		#self.biLM_embedding = self.biLM(self.test, stack=self.stack) # [N, self.time_depth, self.embedding_size] * (self.stack+1)
+		#self.elmo_embedding = self._ELMo(self.biLM_embedding) # [N, self.time_depth, self.embeding_size]
 
 		'''
 		with tf.name_scope('nucleotide_embedding'):
@@ -72,7 +85,87 @@ class ELMo:
 		self.sess.run(tf.global_variables_initializer())
 
 
-	def word2embedding(self):
+	def make_embadding_table(self, pad_idx):
+		zero = tf.zeros([1, self.embedding_size], dtype=tf.float32) # for padding
+		embedding_table = tf.Variable(tf.random_normal([self.voca_size-1, self.embedding_size])) 
+		front, end = tf.split(embedding_table, [pad_idx, -1])
+		embedding_table = tf.concat((front, zero, end), axis=0)
+		return embedding_table
+
+
+	def convolution(self, embedding, embedding_size, window_size, filters):
+		convolved_features = []
+		for i in range(len(window_size)):
+			convolved = tf.layers.conv2d(
+						inputs = embedding, 
+						filters = filters[i], 
+						kernel_size = [window_size[i], embedding_size], 
+						strides=[1, 1], 
+						padding='VALID', 
+						activation=tf.nn.relu
+					) # [N, ?, 1, filters]
+			convolved_features.append(convolved) # [N, ?, 1, filters] 이 len(window_size) 만큼 존재.
+		return convolved_features
+
+
+	def max_pooling(self, convolved_features):
+		pooled_features = []
+		for convolved in convolved_features: # [N, ?, 1, self.filters]
+			max_pool = tf.reduce_max(
+	  				  	input_tensor = convolved,
+					    axis = 1,
+					    keep_dims = True
+					) # [N, 1, 1, self.filters]
+			pooled_features.append(max_pool) # [N, 1, 1, self.filters] 이 len(window_size) 만큼 존재.
+		return pooled_features
+
+
+	def charCNN(self, window_size, filters):
+		len_word = tf.shape(self.data)[1] # word length
+
+		embedding = tf.nn.embedding_lookup(self.embedding_table, self.data) # [N, word, char, self.embedding_size] 
+		embedding = tf.reshape(embedding, [-1, tf.shape(embedding)[2], self.embedding_size]) # [N*word, char, self.embedding_size]
+			# => convolution 적용하기 위해서 word는 batch화 시킴. 동일하게 적용되도록.
+		embedding = tf.expand_dims(embedding, axis=-1) # [N*word, char, self.embedding, 1]
+			# => convolution을 위해 channel 추가.
+
+		convolved_embedding = self.convolution(embedding, self.embedding_size, window_size, filters)
+			# => [N*word, ?, 1, filters] 이 len(window_size) 만큼 존재.
+		max_pooled_embedding = self.max_pooling(convolved_features=convolved_embedding)
+			# => [N*word, 1, 1, filters] 이 len(window_size) 만큼 존재. 
+		embedding = tf.concat(max_pooled_embedding, axis=-1) # [N*word, 1, 1, sum(filters)]
+			# => filter 기준으로 concat
+		embedding = tf.reshape(embedding, [-1, len_word, np.sum(filters)]) # [N, word, sum(filters)]
+		return embedding		
+
+
+	def highway_network(self, embedding):
+		# embedding: [N, word, sum(filters)]
+		transform_gate = tf.layers.dense(embedding, units=np.sum(self.filters), activation=tf.nn.sigmoid) # [N, word, sum(filters)]
+		carry_gate = 1-transform_gate # [N, word, sum(*filters)]
+		block_state = tf.layers.dense(embedding, units=np.sum(self.filters), activation=tf.nn.relu)
+		highway = transform_gate * block_state + carry_gate * embedding # [N, word, sum(filters)]
+			# if transfor_gate is 1. then carry_gate is 0. so only use block_state
+			# if transfor_gate is 0. then carry_gate is 1. so only use embedding
+			# if transfor_gate is 0.@@. then carry_gate is 0.@@. so use sum of scaled block_state and embedding
+		return highway
+
+	def embedding_func(self, mode=None):
+		if mode is 'word':
+			embedding = tf.nn.embedding_lookup(self.embedding_table, self.data) # [N, word, self.embedding_size]
+			return embedding
+
+		elif mode is 'char':
+			embedding = self.charCNN(window_size=self.window_size, filters=self.filters) # [N, word, filters*len(window_size)]
+			embedding = self.highway_network(embedding=embedding) # [N, word, filters*len(window_size)]
+			return embedding
+
+
+		'''
+		data = [[[3, 3, 3, 2, 3, 1, 3, 1, 3], [0, 3, 1, 2, 2, 0, 3, 2, 1], [3, 3, 3, 2, 3, 1, 3, 1, 3]],
+	 		[[3, 3, 3, 2, 2, 2, 2, 3, 1], [0, 0, 2, 2, 2, 0, 3, 3, 0], [3, 3, 3, 2, 3, 1, 3, 1, 3]]]
+	 	data를 self.data에 feed해서 self.charCNN 돌려보면 같은 char로 이뤄진 단어는 같은 embedding을 갖는것을 확인할 수 있음.
+		'''
 		# char cnn(kim yoon) => highway layers => linear projection down to a 512
 		# or
 		# word embedding
@@ -146,16 +239,32 @@ sess = tf.Session()
 time_depth = 2
 cell_num = 4
 voca_size = 10
-embedding_size = 4
+embedding_size = 3
 stack = 2
 lr = 0.1
+embedding_mode = 'char'
+pad_idx = 0
+		
 
 import numpy as np
+np.random.seed(777)
+
+#data = np.random.randint(0,4, [2, 3, 9])
+
+data = [[[3, 3, 3, 2, 3, 1, 3, 1, 3], [0, 3, 1, 2, 2, 0, 3, 2, 1], [3, 3, 3, 2, 3, 1, 3, 1, 3]],
+		 [[3, 3, 3, 2, 2, 2, 2, 3, 1], [0, 0, 2, 2, 2, 0, 3, 3, 0], [3, 3, 3, 2, 3, 1, 3, 1, 3]]]
+model = ELMo(sess, time_depth, cell_num, voca_size, embedding_size, stack, lr, embedding_mode=embedding_mode, pad_idx=pad_idx)
+a = sess.run(model.word_embedding, {model.data:data})
+print(data, '\n')
+print(a, '\n',a.shape)
+#for i in a:
+#	print(i.shape)
+
+
+'''
 data = np.random.randn(2,time_depth,embedding_size)
 zero = np.zeros((2,time_depth,embedding_size), dtype=np.float32)
 print(data.shape)
-
-model = ELMo(sess, time_depth, cell_num, voca_size, embedding_size, stack, lr)
 
 bi, elmo = sess.run([model.biLM_embedding, model.elmo_embedding], {model.test:data})
 
@@ -165,3 +274,4 @@ for i in bi:
 print('zero\n',zero, '\n')
 
 print('elmo\n',elmo)
+'''
