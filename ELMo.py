@@ -112,9 +112,9 @@ class ELMo:
 		pooled_features = []
 		for convolved in convolved_features: # [N, ?, 1, self.filters]
 			max_pool = tf.reduce_max(
-	  				  	input_tensor = convolved,
-					    axis = 1,
-					    keep_dims = True
+						input_tensor = convolved,
+						axis = 1,
+						keep_dims = True
 					) # [N, 1, 1, self.filters]
 			pooled_features.append(max_pool) # [N, 1, 1, self.filters] 이 len(window_size) 만큼 존재.
 		return pooled_features
@@ -149,6 +149,7 @@ class ELMo:
 			# if transfor_gate is 0. then carry_gate is 1. so only use embedding
 			# if transfor_gate is 0.@@. then carry_gate is 0.@@. so use sum of scaled block_state and embedding
 		return highway
+
 
 	def embedding_func(self, mode=None):
 		if mode is 'word':
