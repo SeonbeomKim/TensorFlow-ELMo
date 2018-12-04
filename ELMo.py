@@ -7,22 +7,23 @@ class ELMo:
 					embedding_mode='char', pad_idx=0, window_size=[2,3,4], filters=[3,4,5]):
 		self.sess = sess
 		self.time_depth = time_depth
-		self.cell_num = cell_num
-		self.voca_size = voca_size # 'a' 't' 'g' 'c' 4개
-		self.embedding_size = embedding_size
-		self.stack = stack
+		self.cell_num = cell_num # 4096
+		self.voca_size = voca_size # 'word': 단어 개수, 'char': char 개수
+		self.embedding_size = embedding_size # 512 == projection size 
+		self.stack = stack # biLM stack size
 		self.lr = lr
-		self.word_embedding = word_embedding
-		self.embedding_mode = embedding_mode
-		self.pad_idx = pad_idx
-		self.window_size = window_size
-		self.filters = filters
+		self.word_embedding = word_embedding # when use pre-trained word_embedding like GloVe, word2vec
+		self.embedding_mode = embedding_mode # 'word' or 'char'
+		self.pad_idx = pad_idx # 0
+		self.window_size = window_size # for charCNN
+		self.filters = filters # for charCNN  np.sum(filters) = 2048
 
 		with tf.name_scope("placeholder"):
 			if embedding_mode is 'char':
 				self.data = tf.placeholder(tf.int32, [None, None, None], name="x") # [N, word, char]
 			elif embedding_mode is 'word':
 				self.data = tf.placeholder(tf.int32, [None, None], name="x") # [N, word]
+
 			self.target = tf.placeholder(tf.float32, [None, None], name="target") 
 			self.keep_prob = tf.placeholder(tf.float32, name="keep_prob") # for dropout
 
@@ -31,8 +32,8 @@ class ELMo:
 				self.embedding_table = self.make_embadding_table(pad_idx=self.pad_idx)
 				self.word_embedding = self.embedding_func(mode=embedding_mode)
 
-		#self.biLM_embedding = self.biLM(self.test, stack=self.stack) # [N, self.time_depth, self.embedding_size] * (self.stack+1)
-		#self.elmo_embedding = self._ELMo(self.biLM_embedding) # [N, self.time_depth, self.embeding_size]
+			self.biLM_embedding = self.biLM(self.word_embedding, stack=self.stack) # [N, self.time_depth, self.embedding_size] * (self.stack+1)
+			self.elmo_embedding = self._ELMo(self.biLM_embedding) # [N, self.time_depth, self.embeding_size]
 
 		'''
 		with tf.name_scope('nucleotide_embedding'):
@@ -157,10 +158,13 @@ class ELMo:
 			return embedding
 
 		elif mode is 'char':
+			# charCNN
 			embedding = self.charCNN(window_size=self.window_size, filters=self.filters) # [N, word, filters*len(window_size)]
 			# two highway layer
 			embedding = self.highway_network(embedding=embedding) # [N, word, filters*len(window_size)]
 			embedding = self.highway_network(embedding=embedding) # [N, word, filters*len(window_size)]
+			# linear projection
+			embedding = tf.layers.dense(embedding, units=self.embedding_size, activation=None)
 			return embedding
 
 
@@ -208,7 +212,7 @@ class ELMo:
 				concat_val = tf.concat((fw_val, reverse_bw_val), axis=-1) # [N, self.time_depth, self.cell_num*2]
 
 				# linear projection, shape: [N, self.time_depth, self.embedding_size//2]
-				linear_concat_val = tf.layers.dense(concat_val, units=self.embeding_size, activation=None, name='linear'+str(i))
+				linear_concat_val = tf.layers.dense(concat_val, units=self.embedding_size, activation=None, name='linear'+str(i))
 			
 				# save current layer state for residual connection and ELMo
 				concat_layer_val.append(linear_concat_val)
@@ -255,12 +259,27 @@ np.random.seed(777)
 
 data = [[[3, 3, 3, 2, 3, 1, 3, 1, 3], [0, 3, 1, 2, 2, 0, 3, 2, 1], [3, 3, 3, 2, 3, 1, 3, 1, 3]],
 		 [[3, 3, 3, 2, 2, 2, 2, 3, 1], [0, 0, 2, 2, 2, 0, 3, 3, 0], [3, 3, 3, 2, 3, 1, 3, 1, 3]]]
+
 model = ELMo(sess, time_depth, cell_num, voca_size, embedding_size, stack, lr, embedding_mode=embedding_mode, pad_idx=pad_idx)
 a = sess.run(model.word_embedding, {model.data:data})
+bi, elmo = sess.run([model.biLM_embedding, model.elmo_embedding], {model.data:data})
 print(data, '\n')
 print(a, '\n',a.shape)
+print(elmo, '\n',elmo.shape)
 #for i in a:
 #	print(i.shape)
+
+sess.close()
+tf.reset_default_graph()
+sess =tf.Session()
+
+data2 = [[0, 3,3,3], [1,4,4,4], [0, 5,5,5], [0, 5,5,5]]
+model2 = ELMo(sess, time_depth, cell_num, voca_size, embedding_size, stack, lr, embedding_mode='word', pad_idx=pad_idx)
+a = sess.run(model2.word_embedding, {model2.data:data2})
+bi, elmo = sess.run([model2.biLM_embedding, model2.elmo_embedding], {model2.data:data2})
+print(data, '\n')
+print(a, '\n',a.shape)
+print(elmo, '\n',elmo.shape)
 
 
 '''
