@@ -174,20 +174,16 @@ class biLM:
  		# 양방향은 파라미터 전부 공유(softmax하는 layer도 포함.)
 
 		with tf.variable_scope('biLM') as scope:
-
 			concat_layer_val = [data] # x_data
+		
+			fw_input = concat_layer_val[0]
+			bw_input = tf.reverse(fw_input, axis=[1])
+
 			for i in range(stack):
 
 				# https://www.tensorflow.org/api_docs/python/tf/contrib/rnn/LayerNormBasicLSTMCell
 				cell = tf.contrib.rnn.LSTMCell(self.cell_num)
 				
-				if i == 0:
-					fw_input = concat_layer_val[i]
-					bw_input = tf.reverse(fw_input, axis=[1])
-				else:
-					fw_input = concat_layer_val[i]+concat_layer_val[i-1]
-					bw_input = tf.reverse(fw_input, axis=[1])
-
 				# fw_bw_val: shape: [N, self.time_depth, self.cell_num]
 				fw_val, _ = tf.nn.dynamic_rnn(cell, fw_input, dtype=tf.float32, scope='stack_fw'+str(i))				
 				bw_val, _ = tf.nn.dynamic_rnn(cell, bw_input, dtype=tf.float32, scope='stack_bw'+str(i))
@@ -202,6 +198,12 @@ class biLM:
 				# save current layer state for residual connection and ELMo
 				concat_layer_val.append(linear_concat_val)
 
+				# update next layer input
+				if i < stack-1:
+					# update next layer input
+					fw_input = linear_concat_val + fw_input
+					bw_input = tf.reverse(fw_input, axis=[1])
+					
 			return concat_layer_val
 				
 	def _ELMo(self, concat_layer_val):
