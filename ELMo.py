@@ -158,6 +158,8 @@ class ELMo:
 
 		elif mode is 'char':
 			embedding = self.charCNN(window_size=self.window_size, filters=self.filters) # [N, word, filters*len(window_size)]
+			# two highway layer
+			embedding = self.highway_network(embedding=embedding) # [N, word, filters*len(window_size)]
 			embedding = self.highway_network(embedding=embedding) # [N, word, filters*len(window_size)]
 			return embedding
 
@@ -201,16 +203,15 @@ class ELMo:
 				fw_val, _ = tf.nn.dynamic_rnn(cell, fw_input, dtype=tf.float32, scope='stack_fw'+str(i))				
 				bw_val, _ = tf.nn.dynamic_rnn(cell, bw_input, dtype=tf.float32, scope='stack_bw'+str(i))
 
-				# linear projection, shape: [N, self.time_depth, self.embedding_size//2]
-				fw_val = tf.layers.dense(fw_val, units=self.embedding_size//2, activation=None, name='linear'+str(i))
-				bw_val = tf.layers.dense(bw_val, units=self.embedding_size//2, activation=None, name='linear'+str(i), reuse=True)
-				
 				# concat fw||bw
 				reverse_bw_val = tf.reverse(bw_val, axis=[1]) # 처음에 뒤집어서 넣었으므로 다시 뒤집어줌.
-				concat_val = tf.concat((fw_val, reverse_bw_val), axis=-1) # [N, self.time_depth, self.embedding_size]
+				concat_val = tf.concat((fw_val, reverse_bw_val), axis=-1) # [N, self.time_depth, self.cell_num*2]
 
+				# linear projection, shape: [N, self.time_depth, self.embedding_size//2]
+				linear_concat_val = tf.layers.dense(concat_val, units=self.embeding_size, activation=None, name='linear'+str(i))
+			
 				# save current layer state for residual connection and ELMo
-				concat_layer_val.append(concat_val)
+				concat_layer_val.append(linear_concat_val)
 
 			return concat_layer_val
 				
