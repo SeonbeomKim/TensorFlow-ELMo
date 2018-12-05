@@ -74,8 +74,9 @@ def run(model, dataset, x_max, lr, restore=0):
 
 
 
-data_path = './PTB_dataset/ptb.test.txt'
-data_path = './PTB_dataset/ptb.train.txt'
+train_data_path = './PTB_dataset/ptb.train.txt'
+valid_data_path = './PTB_dataset/ptb.valid.txt'
+test_data_path = './PTB_dataset/ptb.test.txt'
 
 data_util = pr.preprocess()
 # data_util.get_vocabulary(data_path, top_voca=None, char_voca=True, save_path=data_savepath)
@@ -89,11 +90,19 @@ print('idx2char', len(idx2char))
 print('word2idx', len(word2idx))
 print('idx2word', len(idx2word))
 '''
+for i in range(10):
+	print(i, idx2word[i])
 
-data_util.make_char_idx_dataset_csv(data_path, voca_path=data_savepath, save_path=data_savepath, time_step=35, word_length=65)
+'''
+data_util.make_char_idx_dataset_csv(train_data_path, voca_path=data_savepath, save_path=data_savepath+'train.csv', time_step=35, word_length=65)
+data_util.make_char_idx_dataset_csv(valid_data_path, voca_path=data_savepath, save_path=data_savepath+'valid.csv', time_step=35, word_length=65)
+data_util.make_char_idx_dataset_csv(test_data_path, voca_path=data_savepath, save_path=data_savepath+'test.csv', time_step=35, word_length=65)
 # data: [N, (time_step+1) * (word_length)] 임. # [N, time_step+1, word_length] 로 reshape하고, data[:, :-1, :] 는 input, data[:, 1:, :] 는 target.
+'''
 
-
+data_util.maximum_word(train_data_path)
+data_util.maximum_word(valid_data_path)
+data_util.maximum_word(test_data_path)
 
 
 #data_util.get_idx_dataset(data_path, char_voca=True, savepath=None)

@@ -77,63 +77,89 @@ class preprocess:
 		else:
 			word2idx, idx2word, char2idx, idx2char = self.get_vocabulary(data_path, top_voca=None, char_voca=True, save_path=save_path)
 
+		'''
 		print('char2idx', len(char2idx))
 		print('idx2char', len(idx2char))
 		print('word2idx', len(word2idx))
 		print('idx2word', len(idx2word))
-
+		'''
 		
+		o = open(save_path, 'w', newline='')
+		wt = csv.writer(o)
+
 		with open(data_path, 'r', newline='') as f:
 			wr = csv.reader(f)
-			sentence_list = []
 
 			for sentence in wr:
+				# append '</g>' and '</e>' to sentence and padding('</p>')
 				sentence = ['</g>'] + sentence[0].split() + ['</e>']
+
+				
+				for start in range(len(sentence)):
+					'''
+					TODO
+					# 포문돌면서 time_Step+1만큼 뽑고 그 길이가 time_step보다 크면 바로 반영, 작으면 패딩하고 포문 종료.
+					'''
+
+
+
 				if len(sentence) > time_step:
 					sentence = sentence[:time_step+1] # target은 [1:],  input은 [0:-1] 로끊어써야하므로 1개 더 뽑음.
 				else:
 					sentence = np.pad(sentence, (0, time_step+1-len(sentence)), 'constant', constant_values='</p>') # time_step이 N이면 data는 N+1개 만들어야 함.
-					sentence = sentence.tolist()
 				
-				print(sentence, len(sentence))
-				word_list = []			
-				for word in sentence:
-					if word == '</g>' or word == '</e>' or word == '</p>' or word == 'UNK':
+
+				# make target(word) idx
+				target_list = []
+				for word in sentence[1:]:
+					if word in word2idx:
+						target_list.append(word2idx[word])
+					else:
+						target_list.append(word2idx['<unk>']) # shape: [time_step]
+
+
+				# make input(char) idx
+				input_list = []	
+				for word in sentence[:-1]:
+					if word == '</g>' or word == '</e>' or word == '</p>' or word == '<unk>' or word == 'N':
 						#print(word, char2idx['</p>'])
 						char_list = np.repeat([char2idx['</p>']], word_length)
-						word_list.append(char_list)
+						input_list.append(char_list)
 					else:
 						char_list = []
 						word2char = list(word)
 						for char in word2char:
 							char_list.append(char2idx[char])
 						char_list = np.pad(char_list, (0, word_length-len(char_list)), 'constant', constant_values=char2idx['</p>'])
-						word_list.append(char_list)
-				sentence_list.append(word_list)
-				sentence_list = np.array(sentence_list)
+						input_list.append(char_list)
 				
-						#pass
-				'''
-				#temp = ['</g>'] + sentence[0].split() + ['</e>']
-				print(sentence[0].split())
-				if len(sentence) > time_step: 
-					pass# slide window 해서 데이터 늘리기.
-				else:
-					print(sentence)
-					#pad_sentence = np.pad(sentence, (0, 0), 'constant', )
-					#pad_sentence = np.pad(sentence, (0, time_step-len(sentence)))
-				'''
-				break
-				'''
-				word_counter += collections.Counter(sentence)
+				# input_list: [time_step, word_length]
+				input_list = np.reshape(input_list, [-1]) # input_list: [(time_step)*word_length]
+				input_target_concat = np.concatenate((input_list, target_list),axis=0)
+				
+				wt.writerow(input_target_concat)	
 
-				if char_voca is True:
-					for char in sentence:
-						char_counter += collections.Counter(char)
-				'''
+		o.close()
+		print('ok', save_path)
+
+
+	def maximum_word(self, data_path):
+		maximum = 0
+		with open(data_path, 'r', newline='') as f:
+			wr = csv.reader(f)
+
+			for index, sentence in enumerate(wr):
+				# append '</g>' and '</e>' to sentence and padding('</p>')
+				sentence = ['</g>'] + sentence[0].split() + ['</e>']
+				print(index, len(sentence))
+				maximum = max(maximum, len(sentence))
+			print(data_path, maximum)
+
+
 
 	def save_data(self, path, data):
 		np.save(path, data)
+
 
 	def load_data(self, path, data_structure = None):
 		if data_structure == 'dictionary': 
@@ -142,47 +168,73 @@ class preprocess:
 			data = np.load(path, encoding='bytes')
 		return data
 
-
-				#break
-
-	'''
-
-			word = (f.readline().split())	#text8은 하나의 줄이며 단어마다 띄어쓰기로 구분.
-
-		word2idx = {}
-		idx2word = {}
-
-		table = collections.Counter(word).most_common(top_voca-1) #빈도수 상위 x-1개 뽑음. 튜플형태로 정렬되어있음 [("단어", 빈도수),("단어",빈도수)] 
-		for index, data in enumerate(table):
-			word2idx[data[0]] = index
-			idx2word[index] = data[0]
-
-		if savepath is not None:
-			if not os.path.exists(savepath):
-				print("create save directory")
-				os.makedirs(savepath)
-			self.save_data(savepath+'word2idx.npy', word2idx)
-			print("word2idx save", savepath+'word2idx.npy')
-			self.save_data(savepath+'idx2word.npy', word2idx)
-			print("idx2word save", savepath+'idx2word.npy')
-
-		return word2idx, idx2word
-
-
-	def make_dataset(self, data_path, sequence_length, savepath=None):
-		if os.path.exists(savepath+'word2idx.npy') and os.path.exists(savepath+'idx2word.npy'):
-			word2idx = self.load_data(savepath+'word2idx.npy', data_structure ='dictionary')
-			idx2word = self.load_data(savepath+'idx2word.npy', data_structure ='dictionary')
+""" 백업.
+	def make_char_idx_dataset_csv(self, data_path, voca_path=None, save_path=None, time_step=35, word_length=65):
+		if voca_path is not None:
+			if os.path.exists(voca_path+'word2idx.npy') and os.path.exists(voca_path+'idx2word.npy') and os.path.exists(voca_path+'char2idx.npy') and os.path.exists(voca_path+'idx2char.npy'):
+				char2idx = self.load_data(voca_path+'char2idx.npy', data_structure='dictionary')
+				idx2char = self.load_data(voca_path+'idx2char.npy', data_structure='dictionary')
+				word2idx = self.load_data(voca_path+'word2idx.npy', data_structure='dictionary')
+				idx2word = self.load_data(voca_path+'idx2word.npy', data_structure='dictionary')				
+			else:
+				word2idx, idx2word, char2idx, idx2char = self.get_vocabulary(data_path, top_voca=None, char_voca=True, save_path=save_path)
 		else:
-			word2idx, idx2word = self.get_vocabulary(data_path, top_voca, savepath)
+			word2idx, idx2word, char2idx, idx2char = self.get_vocabulary(data_path, top_voca=None, char_voca=True, save_path=save_path)
 
-		with open(data_path, 'r') as f:
-			word = (f.readline().split())	#text8은 하나의 줄이며 단어마다 띄어쓰기로 구분.
-
+		'''
+		print('char2idx', len(char2idx))
+		print('idx2char', len(idx2char))
+		print('word2idx', len(word2idx))
+		print('idx2word', len(idx2word))
+		'''
 		
+		o = open(save_path, 'w', newline='')
+		wt = csv.writer(o)
+
+		with open(data_path, 'r', newline='') as f:
+			wr = csv.reader(f)
+
+			for sentence in wr:
+				# append '</g>' and '</e>' to sentence and padding('</p>')
+				sentence = ['</g>'] + sentence[0].split() + ['</e>']
+				if len(sentence) > time_step:
+					sentence = sentence[:time_step+1] # target은 [1:],  input은 [0:-1] 로끊어써야하므로 1개 더 뽑음.
+				else:
+					sentence = np.pad(sentence, (0, time_step+1-len(sentence)), 'constant', constant_values='</p>') # time_step이 N이면 data는 N+1개 만들어야 함.
+				
+
+				# make target(word) idx
+				target_list = []
+				for word in sentence[1:]:
+					if word in word2idx:
+						target_list.append(word2idx[word])
+					else:
+						target_list.append(word2idx['<unk>']) # shape: [time_step]
 
 
+				# make input(char) idx
+				input_list = []	
+				for word in sentence[:-1]:
+					if word == '</g>' or word == '</e>' or word == '</p>' or word == '<unk>' or word == 'N':
+						#print(word, char2idx['</p>'])
+						char_list = np.repeat([char2idx['</p>']], word_length)
+						input_list.append(char_list)
+					else:
+						char_list = []
+						word2char = list(word)
+						for char in word2char:
+							char_list.append(char2idx[char])
+						char_list = np.pad(char_list, (0, word_length-len(char_list)), 'constant', constant_values=char2idx['</p>'])
+						input_list.append(char_list)
+				
+				# input_list: [time_step, word_length]
+				input_list = np.reshape(input_list, [-1]) # input_list: [(time_step)*word_length]
+				input_target_concat = np.concatenate((input_list, target_list),axis=0)
+				
+				wt.writerow(input_target_concat)	
+
+		o.close()
+		print('ok', save_path)
 
 
-	
-	'''
+"""
