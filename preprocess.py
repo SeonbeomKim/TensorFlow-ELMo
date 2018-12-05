@@ -111,7 +111,6 @@ class preprocess:
 						word_list.append(char_list)
 				sentence_list.append(word_list)
 				sentence_list = np.array(sentence_list)
-				print(sentence_list, sentence_list.shape)
 				
 						#pass
 				'''
