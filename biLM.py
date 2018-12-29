@@ -3,15 +3,15 @@ import tensorflow as tf
 tf.set_random_seed(777)
 
 class biLM:
-	def __init__(self, sess, time_depth, cell_num, voca_size, embedding_size, stack, lr, word_embedding=None, 
+	def __init__(self, sess, time_depth, cell_num, voca_size, target_size, embedding_size, stack, word_embedding=None, 
 					embedding_mode='char', pad_idx=0, window_size=[2,3,4], filters=[3,4,5]):
 		self.sess = sess
 		self.time_depth = time_depth
 		self.cell_num = cell_num # 4096
 		self.voca_size = voca_size # 'word': 단어 개수, 'char': char 개수
+		self.target_size = target_size
 		self.embedding_size = embedding_size # 512 == projection size 
 		self.stack = stack # biLM stack size
-		self.lr = lr
 		self.word_embedding = word_embedding # when use pre-trained word_embedding like GloVe, word2vec
 		self.embedding_mode = embedding_mode # 'word' or 'char'
 		self.pad_idx = pad_idx # 0
@@ -20,34 +20,37 @@ class biLM:
 
 		with tf.name_scope("placeholder"):
 			if embedding_mode is 'char':
-				self.data = tf.placeholder(tf.int32, [None, None, None], name="x") # [N, word, char]
+				self.data = tf.placeholder(tf.int32, [None, None, None], name="char_x") # [N, word, char]
 			elif embedding_mode is 'word':
-				self.data = tf.placeholder(tf.int32, [None, None], name="x") # [N, word]
+				self.data = tf.placeholder(tf.int32, [None, None], name="word_x") # [N, word]
 
-			self.target = tf.placeholder(tf.float32, [None, None], name="target") 
-			self.keep_prob = tf.placeholder(tf.float32, name="keep_prob") # for dropout
+			self.target = tf.placeholder(tf.float32, [None, self.target_size], name="target") 
+			self.lr = tf.placeholder(tf.float32, name="lr") # lr
+
 
 		with tf.name_scope("embedding"):		
 			if self.word_embedding is None:
 				self.embedding_table = self.make_embadding_table(pad_idx=self.pad_idx)
 				self.word_embedding = self.embedding_func(mode=embedding_mode)
 
-			self.biLM_embedding = self.biLM(self.word_embedding, stack=self.stack) # [N, self.time_depth, self.embedding_size] * (self.stack+1)
+			#self.biLM_embedding = self.biLM(self.word_embedding, stack=self.stack) # [N, self.time_depth, self.embedding_size] * (self.stack+1)
+			self.fw_embedding, self.bw_embedding = self.biLM(self.word_embedding, stack=self.stack) # [N, self.time_depth, self.embedding_size] * (self.stack+1)
 			
 			# biLM 학습시에는 top layer만.
-			self.biLM_embedding = self.biLM_embedding[-1] # [N, self.time_depth, self.embedding_size]
+			#self.biLM_embedding = self.biLM_embedding[-1] # [N, self.time_depth, self.embedding_size]
 			
 			# 학습된 biLM을 task에 적용할 때 사용.
 			#self.elmo_embedding = self._ELMo(self.biLM_embedding) # [N, self.time_depth, self.embeding_size]
 
 		with tf.name_scope('prediction'):
-			self.pred = tf.layers.dense(self.biLM_embedding, units=self.voca_size, activation=None)
+			self.fw_pred = tf.layers.dense(self.fw_embedding[-1], units=self.target_size, activation=None, name='softmax_layer')
+			self.bw_pred = tf.layers.dense(self.bw_embedding[-1], units=self.target_size, activation=None, name='softmax_layer', reuse=True) #reuse same name weight
 
 
 		with tf.name_scope('train'): 
 			target_one_hot = tf.one_hot(
 						self.target, # [None, self.target_length]
-						depth=self.voca_size,
+						depth=self.target_size,
 						on_value = 1., # tf.float32
 						off_value = 0., # tf.float32
 					) # [N, self.target_length, self.voca_size]
@@ -94,7 +97,7 @@ class biLM:
 						kernel_size = [window_size[i], embedding_size], 
 						strides=[1, 1], 
 						padding='VALID', 
-						activation=tf.nn.relu
+						activation=tf.nn.tanh
 					) # [N, ?, 1, filters]
 			convolved_features.append(convolved) # [N, ?, 1, filters] 이 len(window_size) 만큼 존재.
 		return convolved_features
@@ -174,112 +177,35 @@ class biLM:
  		# 양방향은 파라미터 전부 공유(softmax하는 layer도 포함.)
 
 		with tf.variable_scope('biLM') as scope:
-			concat_layer_val = [data] # x_data
+			fw_input = data
+			bw_input = tf.reverse(data, axis=[1])
 		
-			fw_input = concat_layer_val[0]
-			bw_input = tf.reverse(fw_input, axis=[1])
+			fw_layer_val = [fw_input]
+			bw_layer_val = [bw_input]
 
 			for i in range(stack):
 
 				# https://www.tensorflow.org/api_docs/python/tf/contrib/rnn/LayerNormBasicLSTMCell
-				cell = tf.contrib.rnn.LSTMCell(self.cell_num)
+				cell_fw = tf.contrib.rnn.LSTMCell(self.cell_num)
+				cell_bw = tf.contrib.rnn.LSTMCell(self.cell_num)
 				
 				# fw_bw_val: shape: [N, self.time_depth, self.cell_num]
-				fw_val, _ = tf.nn.dynamic_rnn(cell, fw_input, dtype=tf.float32, scope='stack_fw'+str(i))				
-				bw_val, _ = tf.nn.dynamic_rnn(cell, bw_input, dtype=tf.float32, scope='stack_bw'+str(i))
+				fw_val, _ = tf.nn.dynamic_rnn(cell_fw, fw_input, dtype=tf.float32, scope='stack_fw'+str(i))				
+				bw_val, _ = tf.nn.dynamic_rnn(cell_bw, bw_input, dtype=tf.float32, scope='stack_bw'+str(i))
 
-				# concat fw||bw
-				reverse_bw_val = tf.reverse(bw_val, axis=[1]) # 처음에 뒤집어서 넣었으므로 다시 뒤집어줌.
-				concat_val = tf.concat((fw_val, reverse_bw_val), axis=-1) # [N, self.time_depth, self.cell_num*2]
-
-				# linear projection, shape: [N, self.time_depth, self.embedding_size//2]
-				linear_concat_val = tf.layers.dense(concat_val, units=self.embedding_size, activation=None, name='linear'+str(i))
+				# linear projection, shape: [N, self.time_depth, self.embedding_size]
+				linear_fw_val = tf.layers.dense(fw_val, units=self.embedding_size, activation=None, name='linear_fw'+str(i))
+				linear_bw_val = tf.layers.dense(bw_val, units=self.embedding_size, activation=None, name='linear_bw'+str(i))#, reuse=True) #reuse same name weight
 			
 				# save current layer state for residual connection and ELMo
-				concat_layer_val.append(linear_concat_val)
+				fw_layer_val.append(linear_fw_val)
+				bw_layer_val.append(linear_bw_val)
 
 				# update next layer input
 				if i < stack-1:
 					# update next layer input
-					fw_input = linear_concat_val + fw_input
-					bw_input = tf.reverse(fw_input, axis=[1])
+					fw_input = linear_fw_val + fw_input
+					bw_input = linear_bw_val + bw_input
 					
-			return concat_layer_val
+			return fw_layer_val, bw_layer_val
 				
-	def _ELMo(self, concat_layer_val):
-		# concat_layer_val: [N, self.time_depth, self.embedding_size] * (self.stack+1)
-		
-		with tf.variable_scope('ELMo') as scope:
-			s_task = tf.Variable(tf.constant(value=0.0, shape=[self.stack+1])) # [self.stack+1] include x_data
-			s_task = tf.nn.softmax(s_task) # [self.stack+1]
-			gamma_task = tf.Variable(tf.constant(value=1.0))
-
-			softmax_norm = []
-			for i in range(self.stack+1):
-				# paper3.2: apply layer normalization to each biLM layer before weighting
-				if i == 0: # biLM은 아니고 embedding이므로 LN 안씀. 
-					softmax_norm.append(s_task[i] * concat_layer_val[i])
-				else: 
-					softmax_norm.append(s_task[i] * tf.contrib.layers.layer_norm(concat_layer_val[i], begin_norm_axis=2))
-				#softmax_norm.append(s_task[i] * concat_layer_val[i])
-
-			ELMo_vector = gamma_task * tf.reduce_sum(softmax_norm, axis=0) # [N, self.time_depth, self.embedding_size]
-
-			return ELMo_vector # [N, self.time_depth, self.embedding_size]
-
-"""
-sess = tf.Session()
-time_depth = 2
-cell_num = 4
-voca_size = 10
-embedding_size = 3
-stack = 2
-lr = 0.1
-embedding_mode = 'char'
-pad_idx = 0
-		
-
-import numpy as np
-np.random.seed(777)
-
-#data = np.random.randint(0,4, [2, 3, 9])
-
-data = [[[3, 3, 3, 2, 3, 1, 3, 1, 3], [0, 3, 1, 2, 2, 0, 3, 2, 1], [3, 3, 3, 2, 3, 1, 3, 1, 3]],
-		 [[3, 3, 3, 2, 2, 2, 2, 3, 1], [0, 0, 2, 2, 2, 0, 3, 3, 0], [3, 3, 3, 2, 3, 1, 3, 1, 3]]]
-
-model = ELMo(sess, time_depth, cell_num, voca_size, embedding_size, stack, lr, embedding_mode=embedding_mode, pad_idx=pad_idx)
-a = sess.run(model.word_embedding, {model.data:data})
-bi, elmo = sess.run([model.biLM_embedding, model.elmo_embedding], {model.data:data})
-print(data, '\n')
-print(a, '\n',a.shape)
-print(elmo, '\n',elmo.shape)
-#for i in a:
-#	print(i.shape)
-
-sess.close()
-tf.reset_default_graph()
-sess =tf.Session()
-
-data2 = [[0, 3,3,3], [1,4,4,4], [0, 5,5,5], [0, 5,5,5]]
-model2 = ELMo(sess, time_depth, cell_num, voca_size, embedding_size, stack, lr, embedding_mode='word', pad_idx=pad_idx)
-a = sess.run(model2.word_embedding, {model2.data:data2})
-bi, elmo = sess.run([model2.biLM_embedding, model2.elmo_embedding], {model2.data:data2})
-print(data, '\n')
-print(a, '\n',a.shape)
-print(elmo, '\n',elmo.shape)
-"""
-
-'''
-data = np.random.randn(2,time_depth,embedding_size)
-zero = np.zeros((2,time_depth,embedding_size), dtype=np.float32)
-print(data.shape)
-
-bi, elmo = sess.run([model.biLM_embedding, model.elmo_embedding], {model.test:data})
-
-for i in bi:
-	print(i/3,'\n')
-	zero += i/3
-print('zero\n',zero, '\n')
-
-print('elmo\n',elmo)
-'''
